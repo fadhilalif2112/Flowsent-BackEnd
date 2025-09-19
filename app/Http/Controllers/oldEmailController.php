@@ -18,50 +18,15 @@ class EmailController extends Controller
         $this->mailerService = $mailerService;
     }
 
-    /**
-     * Ambil semua folder sekaligus (cache-first).
-     * Bisa pakai ?refresh=1 untuk force refresh dari IMAP.
-     */
-    public function all(Request $request)
+    public function all()
     {
         try {
-            $forceRefresh = $request->boolean('refresh', false);
-            $emails = $this->emailService->fetchAllEmails($forceRefresh);
-
+            $emails = $this->emailService->fetchAllEmails();
             return response()->json($emails);
         } catch (\Exception $e) {
-            Log::error('Error fetching all emails: ' . $e->getMessage());
-
             return response()->json([
                 'status'  => 'fail',
                 'message' => 'Gagal mengambil semua email',
-                'error'   => $e->getMessage()
-            ], 500);
-        }
-    }
-
-    /**
-     * Ambil email dari 1 folder (cache-first).
-     * Bisa pakai ?refresh=1 untuk force refresh.
-     */
-    public function folder(Request $request, $folderKey)
-    {
-        try {
-            $forceRefresh = $request->boolean('refresh', false);
-            $emails = $this->emailService->getFolderEmails($folderKey, $forceRefresh);
-
-            return response()->json([
-                'status' => 'success',
-                'data'   => $emails,
-                'folder' => $folderKey,
-                'cached' => !$forceRefresh,
-            ]);
-        } catch (\Exception $e) {
-            Log::error("Error fetching folder {$folderKey}: " . $e->getMessage());
-
-            return response()->json([
-                'status'  => 'fail',
-                'message' => "Gagal mengambil email dari folder {$folderKey}",
                 'error'   => $e->getMessage()
             ], 500);
         }
@@ -71,57 +36,31 @@ class EmailController extends Controller
     {
         $result = $this->emailService->deletePermanentAll();
 
-        return response()->json($result, $result['success'] ? 200 : 500);
-    }
-
-    public function move(Request $request)
-    {
-        $request->validate([
-            'folder'        => 'required|string',
-            'message_ids'   => 'required|array',
-            'target_folder' => 'required|string'
-        ]);
-
-        try {
-            $moved = $this->emailService->moveEmailByMessageId(
-                $request->folder,
-                $request->message_ids,
-                $request->target_folder
-            );
-
-            return response()->json([
-                'status'  => 'success',
-                'message' => count($moved) . ' email berhasil dipindahkan',
-                'moved'   => $moved, // array of messageIds yg berhasil dipindah
-            ]);
-        } catch (\Exception $e) {
-            Log::error("Error moving email: " . $e->getMessage());
-
-            return response()->json([
-                'status'  => 'fail',
-                'message' => 'Gagal memindahkan email',
-                'error'   => $e->getMessage()
-            ], 500);
+        if ($result['success']) {
+            return response()->json($result, 200);
         }
+
+        return response()->json($result, 500);
     }
 
     public function markAsRead(Request $request)
     {
         $request->validate([
-            'folder'      => 'required|string',
-            'message_id'  => 'required|string'
+            'folder'   => 'required|string',
+            'email_id' => 'required'
         ]);
 
         try {
-            $this->emailService->markAsRead($request->folder, $request->message_id);
+            $this->emailService->markAsRead(
+                $request->input('folder'),
+                $request->input('email_id')
+            );
 
             return response()->json([
                 'status'  => 'success',
                 'message' => 'Email berhasil ditandai sebagai sudah dibaca',
-            ]);
+            ], 200);
         } catch (\Exception $e) {
-            Log::error("Error markAsRead: " . $e->getMessage());
-
             return response()->json([
                 'status'  => 'fail',
                 'message' => 'Gagal menandai email sebagai sudah dibaca',
@@ -130,23 +69,61 @@ class EmailController extends Controller
         }
     }
 
-    public function markAsFlagged(Request $request)
+    public function move(Request $request)
     {
         $request->validate([
-            'folder'      => 'required|string',
-            'message_id'  => 'required|string'
+            'folder'        => 'required|string',
+            'email_ids'     => 'required|array',
+            'target_folder' => 'required|string'
         ]);
 
         try {
-            $this->emailService->markAsFlagged($request->folder, $request->message_id);
+            $moved = $this->emailService->moveEmail(
+                $request->input('folder'),
+                $request->input('email_ids'),
+                $request->input('target_folder')
+            );
+
+            if (empty($moved)) {
+                return response()->json([
+                    'status'  => 'fail',
+                    'message' => 'Tidak ada email ditemukan untuk dipindahkan',
+                ], 404);
+            }
+
+            return response()->json([
+                'status'  => 'success',
+                'message' => count($moved) . ' email berhasil dipindahkan',
+                'moved'   => $moved,
+            ], 200);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status'  => 'fail',
+                'message' => 'Gagal memindahkan email',
+                'error'   => $e->getMessage()
+            ], 500);
+        }
+    }
+
+
+    public function markAsFlagged(Request $request)
+    {
+        $request->validate([
+            'folder'   => 'required|string',
+            'email_id' => 'required'
+        ]);
+
+        try {
+            $this->emailService->markAsFlagged(
+                $request->input('folder'),
+                $request->input('email_id')
+            );
 
             return response()->json([
                 'status'  => 'success',
                 'message' => 'Email berhasil ditandai sebagai flagged',
-            ]);
+            ], 200);
         } catch (\Exception $e) {
-            Log::error("Error markAsFlagged: " . $e->getMessage());
-
             return response()->json([
                 'status'  => 'fail',
                 'message' => 'Gagal menandai email sebagai flagged',
@@ -158,20 +135,21 @@ class EmailController extends Controller
     public function markAsUnflagged(Request $request)
     {
         $request->validate([
-            'folder'      => 'required|string',
-            'message_id'  => 'required|string'
+            'folder'   => 'required|string',
+            'email_id' => 'required'
         ]);
 
         try {
-            $this->emailService->markAsUnflagged($request->folder, $request->message_id);
+            $this->emailService->markAsUnflagged(
+                $request->input('folder'),
+                $request->input('email_id')
+            );
 
             return response()->json([
                 'status'  => 'success',
                 'message' => 'Flag berhasil dihapus dari email',
-            ]);
+            ], 200);
         } catch (\Exception $e) {
-            Log::error("Error markAsUnflagged: " . $e->getMessage());
-
             return response()->json([
                 'status'  => 'fail',
                 'message' => 'Gagal menghapus flag dari email',
@@ -183,11 +161,11 @@ class EmailController extends Controller
     public function saveDraft(Request $request)
     {
         $request->validate([
-            'to'           => 'nullable|email',
+            'to'           => 'nullable|email', // draft bisa tanpa penerima
             'subject'      => 'nullable|string|max:255',
             'body'         => 'nullable|string',
             'attachments'  => 'nullable|array',
-            'attachments.*' => 'file|max:10240'
+            'attachments.*' => 'file|max:10240' // max 10MB
         ]);
 
         try {
@@ -206,10 +184,8 @@ class EmailController extends Controller
                 'status'  => 'success',
                 'message' => 'Draft saved successfully',
                 'draft'   => $draft
-            ]);
+            ], 200);
         } catch (\Exception $e) {
-            Log::error("Error saveDraft: " . $e->getMessage());
-
             return response()->json([
                 'status'  => 'fail',
                 'message' => 'Failed to save draft',
@@ -218,20 +194,35 @@ class EmailController extends Controller
         }
     }
 
+
+    /**
+     * Download attachment langsung (stream ke browser)
+     */
     public function downloadAttachment($uid, $filename)
     {
         try {
-            $filename = urldecode($filename);
+            $filename = urldecode($filename); // decode filename dari URL
+
             $attachmentData = $this->emailService->downloadAttachment($uid, $filename);
 
+            if (!$attachmentData || empty($attachmentData['content'])) {
+                return response()->json([
+                    'status'  => 'error',
+                    'message' => 'Attachment not found or empty'
+                ], 404);
+            }
+
+            // Gunakan streamDownload agar tidak mismatch Content-Length
             return response()->streamDownload(
-                fn() => print($attachmentData['content']),
+                function () use ($attachmentData) {
+                    echo $attachmentData['content'];
+                },
                 $attachmentData['filename'],
-                ['Content-Type' => $attachmentData['mime_type']]
+                [
+                    'Content-Type' => $attachmentData['mime_type'],
+                ]
             );
         } catch (\Exception $e) {
-            Log::error("Error downloadAttachment: " . $e->getMessage());
-
             return response()->json([
                 'status'  => 'error',
                 'message' => $e->getMessage()
@@ -239,6 +230,12 @@ class EmailController extends Controller
         }
     }
 
+    /**
+     * Endpoint untuk mengirim email
+     * 
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function send(Request $request)
     {
         try {
