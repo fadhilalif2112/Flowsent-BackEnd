@@ -71,76 +71,6 @@ class EmailService
         return $result;
     }
 
-    // ============= NEW FUNCTION ====================
-    /**
-     * Get emails dari folder tertentu dengan cache
-     */
-    public function getFolderEmails($folderKey, $forceRefresh = false): array
-    {
-        $cacheKey = $this->cachePrefix . 'folder:' . $folderKey;
-
-        if (!$forceRefresh) {
-            $cached = Redis::get($cacheKey);
-            if ($cached) {
-                return json_decode($cached, true);
-            }
-        }
-
-        // Fetch dari IMAP
-        $imapFolderName = $this->resolveFolder($folderKey);
-
-        try {
-            $folder = $this->client->getFolder($imapFolderName);
-            $messages = $folder->messages()->all()->limit(50)->get();
-
-            $emails = $messages->map(fn($msg) => $this->parseEmail($msg))->toArray();
-
-            // Urutkan manual by timestamp desc
-            usort($emails, function ($a, $b) {
-                $timeA = $a['timestamp'] ? strtotime($a['timestamp']) : 0;
-                $timeB = $b['timestamp'] ? strtotime($b['timestamp']) : 0;
-                return $timeB <=> $timeA;
-            });
-
-            // Cache data
-            Redis::setex($cacheKey, $this->cacheTTL, json_encode($emails));
-
-            return $emails;
-        } catch (\Exception $e) {
-            Log::error("Failed to fetch folder {$folderKey}: " . $e->getMessage());
-            return [];
-        }
-    }
-
-    // public function moveEmail($folder, $uids, $targetFolder)
-    // {
-    //     $client = $this->client;
-    //     $client->connect();
-
-    //     $imapSource = $this->resolveFolder($folder);
-    //     $imapTarget = $this->resolveFolder($targetFolder);
-
-    //     $mailbox = $client->getFolder($imapSource);
-    //     $uids = is_array($uids) ? $uids : [$uids];
-
-    //     $moved = [];
-    //     foreach ($uids as $uid) {
-    //         $message = $mailbox->query()->getMessageByUid($uid);
-    //         if ($message) {
-    //             // Ambil data email sebelum dipindah untuk update cache
-    //             $emailData = $this->parseEmail($message);
-
-    //             $message->move($imapTarget);
-    //             $moved[] = $uid;
-
-    //             // Update cache: hapus dari source folder dan tambah ke target folder
-    //             $this->updateCacheAfterMove($emailData, $folder, $targetFolder, $uid);
-    //         }
-    //     }
-
-    //     return $moved;
-    // }
-
     public function moveEmailByMessageId($folder, $messageIds, $targetFolder)
     {
         $client = $this->client;
@@ -200,6 +130,37 @@ class EmailService
             ];
         }
     }
+
+    public function deletePermanent($messageIds)
+    {
+        $this->client->connect();
+
+        $imapFolder = $this->resolveFolder('deleted');
+        $folder = $this->client->getFolder($imapFolder);
+
+        if (!$folder) {
+            throw new \Exception("Folder Deleted Items tidak ditemukan");
+        }
+
+        $messageIds = is_array($messageIds) ? $messageIds : [$messageIds];
+        $deleted = [];
+
+        foreach ($messageIds as $messageId) {
+            $message = $this->findMessageByMessageId($messageId, $imapFolder);
+
+            if ($message) {
+                // Hapus permanen (expunge = true)
+                $message->delete(true);
+                $deleted[] = $messageId;
+
+                // Update cache (hapus dari deleted folder cache)
+                $this->removeEmailFromCache('deleted', $messageId);
+            }
+        }
+
+        return $deleted;
+    }
+
 
     public function markAsRead($folder, $messageId)
     {
@@ -330,7 +291,8 @@ class EmailService
         }
 
         $raw = $email->toString();
-        $folder->appendMessage($raw, ["\\Draft"]);
+
+        $folder->appendMessage($raw, ["\\Draft", "\\Seen"]);
 
         // Clear cache untuk folder draft karena ada email baru
         $this->clearFolderCache('draft');
@@ -345,6 +307,7 @@ class EmailService
                 "html" => $body,
             ],
             "attachments" => collect($attachments)->map(fn($f) => $f->getClientOriginalName())->toArray(),
+            "seen"        => true, // tambahkan indikator seen juga di return value
         ];
     }
 
@@ -411,6 +374,25 @@ class EmailService
         Redis::del($cacheKey);
         Redis::del($this->cachePrefix . 'all_folders');
     }
+
+    private function removeEmailFromCache($folder, $messageId)
+    {
+        $cacheKey = $this->cachePrefix . 'folder:' . $folder;
+        $cached = Redis::get($cacheKey);
+
+        if ($cached) {
+            $emails = json_decode($cached, true);
+            $emails = array_filter($emails, function ($email) use ($messageId) {
+                return $email['messageId'] !== $messageId;
+            });
+
+            Redis::setex($cacheKey, $this->cacheTTL, json_encode(array_values($emails)));
+        }
+
+        // Clear all_folders cache juga
+        Redis::del($this->cachePrefix . 'all_folders');
+    }
+
 
     /**
      * Existing methods (tidak berubah)

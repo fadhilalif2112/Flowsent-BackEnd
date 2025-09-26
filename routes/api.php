@@ -31,6 +31,7 @@ Route::middleware('auth.token')->group(function () {
 
         // Delete operations
         Route::delete('/delete-permanent-all', [EmailController::class, 'deletePermanentAll']);
+        Route::delete('/deletePermanent', [EmailController::class, 'deletePermanent']);
 
         // Draft and send
         Route::post('/draft', [EmailController::class, 'saveDraft']);
@@ -38,5 +39,7 @@ Route::middleware('auth.token')->group(function () {
 
         // Attachments
         Route::get('/attachments/{uid}/download/{filename}', [EmailController::class, 'downloadAttachment']);
+        // Preview attachment
+        Route::get('/attachments/{uid}/preview/{filename}', [EmailController::class, 'previewAttachment']);
     });
 });

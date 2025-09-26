@@ -40,38 +40,34 @@ class EmailController extends Controller
         }
     }
 
-    /**
-     * Ambil email dari 1 folder (cache-first).
-     * Bisa pakai ?refresh=1 untuk force refresh.
-     */
-    public function folder(Request $request, $folderKey)
-    {
-        try {
-            $forceRefresh = $request->boolean('refresh', false);
-            $emails = $this->emailService->getFolderEmails($folderKey, $forceRefresh);
-
-            return response()->json([
-                'status' => 'success',
-                'data'   => $emails,
-                'folder' => $folderKey,
-                'cached' => !$forceRefresh,
-            ]);
-        } catch (\Exception $e) {
-            Log::error("Error fetching folder {$folderKey}: " . $e->getMessage());
-
-            return response()->json([
-                'status'  => 'fail',
-                'message' => "Gagal mengambil email dari folder {$folderKey}",
-                'error'   => $e->getMessage()
-            ], 500);
-        }
-    }
-
     public function deletePermanentAll()
     {
         $result = $this->emailService->deletePermanentAll();
 
         return response()->json($result, $result['success'] ? 200 : 500);
+    }
+
+    public function deletePermanent(Request $request)
+    {
+        $request->validate([
+            'messageIds' => 'required|array',
+        ]);
+
+        try {
+            $deleted = $this->emailService->deletePermanent(
+                $request->input('messageIds')
+            );
+
+            return response()->json([
+                'success' => true,
+                'deleted' => $deleted,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to permanently delete emails: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     public function move(Request $request)
@@ -234,6 +230,45 @@ class EmailController extends Controller
 
             return response()->json([
                 'status'  => 'error',
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Preview attachment inline if possible (images, PDFs, text)
+    public function previewAttachment(Request $request, $uid, $filename)
+    {
+        try {
+            $attachment = $this->emailService->downloadAttachment($uid, $filename);
+
+            $fileName = $attachment['filename'] ?? 'attachment';
+            $mimeType = $attachment['mime_type'] ?? 'application/octet-stream';
+
+            // override mime kalau IMAP balikin octet-stream
+            if ($mimeType === 'application/octet-stream') {
+                if (preg_match('/\.(jpg|jpeg|png|gif|webp)$/i', $fileName)) {
+                    $mimeType = 'image/jpeg';
+                } elseif (preg_match('/\.pdf$/i', $fileName)) {
+                    $mimeType = 'application/pdf';
+                } elseif (preg_match('/\.(txt|log)$/i', $fileName)) {
+                    $mimeType = 'text/plain';
+                }
+            }
+
+            // Preview inline hanya untuk file yang didukung
+            if (preg_match('/(image|pdf|text)/i', $mimeType)) {
+                return response($attachment['content'])
+                    ->header('Content-Type', $mimeType)
+                    ->header('Content-Disposition', 'inline; filename="' . $fileName . '"');
+            }
+
+            // fallback: force download dengan nama asli
+            return response($attachment['content'])
+                ->header('Content-Type', $mimeType)
+                ->header('Content-Disposition', 'attachment; filename="' . $fileName . '"');
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Failed to preview attachment',
                 'message' => $e->getMessage()
             ], 500);
         }
